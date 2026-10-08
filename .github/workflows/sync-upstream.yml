@@ -1,0 +1,55 @@
+name: Sync upstream and deploy
+
+# 作用：把上游 shuaiplus/nodewarden 的最新代码同步到本 fork 的 main，
+# 然后触发 Cloudflare Workers 的构建（通过 Deploy Hook）。
+# 为什么需要它：GitHub 网页版的 "Sync fork" 按钮不保证产生 push 事件，
+# Cloudflare Workers Builds 依赖 push 事件，因此网页同步后常常不会自动部署。
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "即使上游没有更新，也强制触发一次 Cloudflare 部署"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: 同步上游到 fork 的 main
+        id: sync
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/shuaiplus/nodewarden.git
+          git fetch upstream --prune
+          git checkout main
+          git merge --ff-only upstream/main
+          if git diff --quiet origin/main HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git push origin main
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 触发 Cloudflare Workers 构建（Deploy Hook）
+        if: steps.sync.outputs.changed == 'true' || inputs.force
+        run: |
+          curl -sS -X POST "${{ secrets.CF_DEPLOY_HOOK }}"
